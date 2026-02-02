@@ -60,6 +60,7 @@ public class TcpProxyHandler extends ChannelInboundHandlerAdapter {
         f.addListener((ChannelFutureListener) future -> {
             if (future.isSuccess()) {
                 inboundChannel.read();
+                outboundChannel.read();
             } else {
                 inboundChannel.close();
             }
@@ -68,19 +69,26 @@ public class TcpProxyHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
-        if (outboundChannel.isActive()) {
-            ByteBuf data = (ByteBuf) msg;
-            // 保存请求数据用于录制
-            requestBuffer.writeBytes(data.copy());
-            // 转发到目标服务器
+        if (!(msg instanceof ByteBuf data)) {
+            return;
+        }
+
+        if (outboundChannel != null && outboundChannel.isActive()) {
+            if (requestBuffer != null) {
+                requestBuffer.writeBytes(data, data.readerIndex(), data.readableBytes());
+            }
             outboundChannel.writeAndFlush(data).addListener((ChannelFutureListener) future -> {
                 if (future.isSuccess()) {
                     ctx.channel().read();
+                    outboundChannel.read();
                 } else {
                     future.channel().close();
                 }
             });
+            return;
         }
+
+        data.release();
     }
 
     @Override
@@ -106,11 +114,15 @@ public class TcpProxyHandler extends ChannelInboundHandlerAdapter {
 
     private void recordTraffic() {
         try {
-            byte[] requestBytes = new byte[requestBuffer.readableBytes()];
-            requestBuffer.readBytes(requestBytes);
+            byte[] requestBytes = new byte[requestBuffer != null ? requestBuffer.readableBytes() : 0];
+            if (requestBuffer != null) {
+                requestBuffer.readBytes(requestBytes);
+            }
 
-            byte[] responseBytes = new byte[responseBuffer.readableBytes()];
-            responseBuffer.readBytes(responseBytes);
+            byte[] responseBytes = new byte[responseBuffer != null ? responseBuffer.readableBytes() : 0];
+            if (responseBuffer != null) {
+                responseBuffer.readBytes(responseBytes);
+            }
 
             RequestData requestData = new RequestData(
                 protocolParser,
@@ -142,8 +154,12 @@ public class TcpProxyHandler extends ChannelInboundHandlerAdapter {
         } catch (Exception e) {
             log.error("Failed to record TCP traffic", e);
         } finally {
-            requestBuffer.release();
-            responseBuffer.release();
+            if (requestBuffer != null) {
+                requestBuffer.release();
+            }
+            if (responseBuffer != null) {
+                responseBuffer.release();
+            }
         }
     }
 
@@ -159,13 +175,17 @@ public class TcpProxyHandler extends ChannelInboundHandlerAdapter {
 
         @Override
         public void channelRead(ChannelHandlerContext ctx, Object msg) {
-            ByteBuf data = (ByteBuf) msg;
-            // 保存响应数据用于录制
-            responseBuffer.writeBytes(data.copy());
-            // 转发响应给客户端
+            if (!(msg instanceof ByteBuf data)) {
+                return;
+            }
+
+            if (responseBuffer != null) {
+                responseBuffer.writeBytes(data, data.readerIndex(), data.readableBytes());
+            }
             inboundChannel.writeAndFlush(data).addListener((ChannelFutureListener) future -> {
                 if (future.isSuccess()) {
                     ctx.channel().read();
+                    inboundChannel.read();
                 } else {
                     future.channel().close();
                 }
@@ -184,4 +204,3 @@ public class TcpProxyHandler extends ChannelInboundHandlerAdapter {
         }
     }
 }
-

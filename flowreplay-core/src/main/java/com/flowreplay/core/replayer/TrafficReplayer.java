@@ -151,7 +151,7 @@ public class TrafficReplayer {
         }
 
         // 规范化URL拼接
-        String uri = requestData.uri();
+        String uri = normalizeRecordedUri(requestData.uri());
         if (!fullUrl.endsWith("/") && !uri.startsWith("/")) {
             fullUrl = fullUrl + "/" + uri;
         } else if (fullUrl.endsWith("/") && uri.startsWith("/")) {
@@ -179,5 +179,27 @@ public class TrafficReplayer {
         builder.method(requestData.method(), bodyPublisher);
 
         return builder.build();
+    }
+
+    static String normalizeRecordedUri(String uri) {
+        if (uri == null || uri.isBlank() || "*".equals(uri)) {
+            return "/";
+        }
+        if (uri.startsWith("http://") || uri.startsWith("https://")) {
+            URI parsed = URI.create(uri);
+            String path = parsed.getRawPath();
+            if (path == null || path.isEmpty()) {
+                path = "/";
+            }
+            String query = parsed.getRawQuery();
+            if (query != null && !query.isEmpty()) {
+                return path + "?" + query;
+            }
+            return path;
+        }
+        if (uri.startsWith("/")) {
+            return uri;
+        }
+        return "/" + uri;
     }
 }
