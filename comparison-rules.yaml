@@ -1,0 +1,28 @@
+# FlowReplay 比对规则配置示例
+
+rules:
+  # API接口比对规则
+  - name: "API接口比对"
+    urlPattern: "/api/.*"
+    strategies:
+      - type: "http-status"
+      - type: "json-structure"
+        config:
+          ignoreFields:
+            - "timestamp"
+            - "requestId"
+            - "traceId"
+            - "serverTime"
+          ignoreArrayOrder: false
+
+  # 静态资源完全匹配
+  - name: "静态资源比对"
+    urlPattern: "/static/.*"
+    strategies:
+      - type: "exact-match"
+
+  # 默认规则（仅比对HTTP状态码）
+  - name: "默认规则"
+    urlPattern: ".*"
+    strategies:
+      - type: "http-status"

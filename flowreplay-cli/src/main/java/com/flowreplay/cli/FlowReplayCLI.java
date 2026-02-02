@@ -1,21 +1,21 @@
 package com.flowreplay.cli;
 
-import com.flowreplay.core.comparator.ComparisonStrategy;
-import com.flowreplay.core.comparator.HttpStatusStrategy;
-import com.flowreplay.core.comparator.JsonStructureStrategy;
-import com.flowreplay.core.model.ComparisonResult;
-import com.flowreplay.core.model.ReplayResult;
-import com.flowreplay.core.model.TrafficRecord;
+import com.flowreplay.core.comparator.*;
+import com.flowreplay.core.model.*;
 import com.flowreplay.core.recorder.SimpleTrafficRecorder;
 import com.flowreplay.core.recorder.TrafficRecorder;
 import com.flowreplay.core.replayer.TrafficReplayer;
+import com.flowreplay.core.report.ComparisonReport;
+import com.flowreplay.core.report.HtmlReportGenerator;
 import com.flowreplay.core.storage.FileStorage;
 import com.flowreplay.core.storage.QueryCriteria;
 import com.flowreplay.core.storage.TrafficStorage;
 import com.flowreplay.proxy.HttpProxyServer;
 import com.flowreplay.proxy.TcpProxyServer;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * FlowReplay命令行工具
@@ -96,15 +96,20 @@ public class FlowReplayCLI {
     }
 
     private static void handleReplay(String[] args) {
-        // 解析参数：--input ./recordings --target http://localhost:8080
+        // 解析参数：--input ./recordings --target http://localhost:8080 --compare --report ./report.html --config ./rules.yaml
         String input = "./recordings";
         String target = "http://localhost:8080";
+        boolean enableCompare = false;
+        String reportPath = null;
+        String configPath = null;
 
-        for (int i = 1; i < args.length; i += 2) {
-            if (i + 1 >= args.length) break;
+        for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
-                case "--input" -> input = args[i + 1];
-                case "--target" -> target = args[i + 1];
+                case "--input" -> input = args[++i];
+                case "--target" -> target = args[++i];
+                case "--compare" -> enableCompare = true;
+                case "--report" -> reportPath = args[++i];
+                case "--config" -> configPath = args[++i];
             }
         }
 
@@ -122,6 +127,53 @@ public class FlowReplayCLI {
 
             long successCount = results.stream().filter(ReplayResult::success).count();
             System.out.println("Replay completed: " + successCount + "/" + results.size() + " succeeded");
+
+            // 执行比对
+            if (enableCompare) {
+                System.out.println("\nStarting comparison...");
+
+                // 加载比对配置
+                List<ComparisonConfig> configs = configPath != null
+                    ? ComparisonConfigLoader.load(configPath)
+                    : ComparisonConfigLoader.loadDefault();
+
+                Comparator comparator = new Comparator(configs);
+                List<ComparisonReport> comparisonReports = new ArrayList<>();
+
+                // 对每个回放结果进行比对
+                for (int i = 0; i < records.size(); i++) {
+                    TrafficRecord record = records.get(i);
+                    ReplayResult replayResult = results.get(i);
+
+                    if (replayResult.success()) {
+                        ComparisonResult comparisonResult = comparator.compare(record, replayResult.response());
+                        comparisonReports.add(new ComparisonReport(record, comparisonResult));
+                    } else {
+                        // 回放失败的记录，创建失败的比对结果
+                        ComparisonResult failedResult = new ComparisonResult(
+                            false,
+                            List.of(new Difference("replay", "error", "success", "failed: " + replayResult.errorMessage())),
+                            Map.of()
+                        );
+                        comparisonReports.add(new ComparisonReport(record, failedResult));
+                    }
+                }
+
+                // 统计比对结果
+                long matchedCount = comparisonReports.stream()
+                    .filter(r -> r.result().matched())
+                    .count();
+                System.out.println("Comparison completed: " + matchedCount + "/" + comparisonReports.size() + " matched");
+
+                // 生成HTML报告
+                if (reportPath != null) {
+                    System.out.println("\nGenerating HTML report...");
+                    HtmlReportGenerator reportGenerator = new HtmlReportGenerator();
+                    reportGenerator.generateReport(comparisonReports, reportPath);
+                    System.out.println("Report generated: " + reportPath);
+                }
+            }
+
         } catch (Exception e) {
             System.err.println("Failed to replay: " + e.getMessage());
             e.printStackTrace();
@@ -138,7 +190,7 @@ public class FlowReplayCLI {
         System.out.println();
         System.out.println("Usage:");
         System.out.println("  flowreplay record --port <port> --target <host:port> --output <path> [--protocol http|tcp] [--protocol-parser <parser>]");
-        System.out.println("  flowreplay replay --input <path> --target <url>");
+        System.out.println("  flowreplay replay --input <path> --target <url> [--compare] [--report <path>] [--config <path>]");
         System.out.println("  flowreplay compare --recorded <path> --replayed <path>");
         System.out.println();
         System.out.println("Examples:");
@@ -153,5 +205,11 @@ public class FlowReplayCLI {
         System.out.println();
         System.out.println("  # 回放");
         System.out.println("  flowreplay replay --input ./recordings --target http://localhost:9090");
+        System.out.println();
+        System.out.println("  # 回放并比对，生成HTML报告");
+        System.out.println("  flowreplay replay --input ./recordings --target http://localhost:9090 --compare --report ./report.html");
+        System.out.println();
+        System.out.println("  # 使用自定义比对规则");
+        System.out.println("  flowreplay replay --input ./recordings --target http://localhost:9090 --compare --report ./report.html --config ./rules.yaml");
     }
 }

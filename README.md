@@ -85,7 +85,7 @@ java -jar flowreplay-cli/target/flowreplay-cli-1.0.0-SNAPSHOT-jar-with-dependenc
 
 将录制的流量回放到新系统：
 
-**HTTP回放**：
+**基础HTTP回放**：
 ```bash
 java -jar flowreplay-cli/target/flowreplay-cli-1.0.0-SNAPSHOT-jar-with-dependencies.jar replay \
   --input ./recordings \
@@ -99,6 +99,36 @@ java -jar flowreplay-cli/target/flowreplay-cli-1.0.0-SNAPSHOT-jar-with-dependenc
   --input ./recordings \
   --target 192.168.109.180:9090
 ```
+
+### 4. 回放并比对
+
+回放流量并自动比对结果，生成HTML差异报告：
+
+**使用默认比对规则**：
+```bash
+java -jar flowreplay-cli/target/flowreplay-cli-1.0.0-SNAPSHOT-jar-with-dependencies.jar replay \
+  --input ./recordings \
+  --target http://localhost:9090 \
+  --compare \
+  --report ./report.html
+```
+
+**使用自定义比对规则**：
+```bash
+java -jar flowreplay-cli/target/flowreplay-cli-1.0.0-SNAPSHOT-jar-with-dependencies.jar replay \
+  --input ./recordings \
+  --target http://localhost:9090 \
+  --compare \
+  --report ./report.html \
+  --config ./comparison-rules.yaml
+```
+
+比对完成后会输出：
+- 总请求数
+- 匹配成功数
+- 匹配失败数
+- 成功率
+- HTML报告路径
 
 ## 核心模块说明
 
@@ -139,6 +169,57 @@ java -jar flowreplay-cli/target/flowreplay-cli-1.0.0-SNAPSHOT-jar-with-dependenc
 
 可通过实现`ComparisonStrategy`接口自定义比对策略。
 
+### 比对规则配置
+
+创建`comparison-rules.yaml`文件来配置比对规则：
+
+```yaml
+rules:
+  # API接口比对规则
+  - name: "API接口比对"
+    urlPattern: "/api/.*"
+    strategies:
+      - type: "http-status"
+      - type: "json-structure"
+        config:
+          ignoreFields:
+            - "timestamp"
+            - "requestId"
+            - "traceId"
+            - "serverTime"
+          ignoreArrayOrder: false
+
+  # 静态资源完全匹配
+  - name: "静态资源比对"
+    urlPattern: "/static/.*"
+    strategies:
+      - type: "exact-match"
+
+  # 默认规则（仅比对HTTP状态码）
+  - name: "默认规则"
+    urlPattern: ".*"
+    strategies:
+      - type: "http-status"
+```
+
+**配置说明**：
+- `urlPattern`：URL匹配模式（正则表达式）
+- `strategies`：比对策略列表，按顺序执行
+- `ignoreFields`：JSON比对时忽略的字段列表
+- `ignoreArrayOrder`：是否忽略数组元素顺序
+
+### HTML差异报告
+
+使用`--report`参数生成HTML差异报告，报告包含：
+
+- **统计摘要**：总请求数、匹配成功数、匹配失败数、成功率
+- **详细差异列表**：每个请求的比对结果
+  - 请求URI和方法
+  - 匹配状态（✓ 匹配 / ✗ 不匹配）
+  - 差异详情（路径、期望值、实际值）
+
+报告采用美观的HTML格式，带有颜色标识和样式，便于快速定位问题。
+
 ## 开发计划
 
 ### 已完成 ✅
@@ -146,9 +227,11 @@ java -jar flowreplay-cli/target/flowreplay-cli-1.0.0-SNAPSHOT-jar-with-dependenc
 - 文件存储实现
 - HTTP代理服务器
 - TCP代理服务器（支持Socket协议）
-- 流量回放引擎
-- 基础比对策略
-- 命令行工具
+- 流量回放引擎（使用Virtual Threads）
+- 基础比对策略（完全匹配、HTTP状态码、JSON结构化）
+- 配置化比对规则（YAML配置文件）
+- HTML差异报告生成器
+- 命令行工具（record、replay、compare）
 
 ### 待实现 🚧
 - HTTPS支持（MITM代理）
@@ -157,6 +240,7 @@ java -jar flowreplay-cli/target/flowreplay-cli-1.0.0-SNAPSHOT-jar-with-dependenc
 - 数据库存储
 - 采样策略
 - 数据脱敏
+- 性能指标比对
 - Web管理界面
 
 ## 许可证
