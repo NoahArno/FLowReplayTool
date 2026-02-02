@@ -1,6 +1,7 @@
 package com.flowreplay.core.report;
 
 import com.flowreplay.core.model.ComparisonResult;
+import com.flowreplay.core.model.ResponseData;
 import com.flowreplay.core.model.TrafficRecord;
 
 /**
@@ -8,6 +9,7 @@ import com.flowreplay.core.model.TrafficRecord;
  */
 public record ComparisonReport(
     TrafficRecord record,
+    ResponseData replayedResponse,
     ComparisonResult result
 ) {
 }

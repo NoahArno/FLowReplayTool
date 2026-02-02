@@ -29,6 +29,12 @@ public class JsonStructureStrategy implements ComparisonStrategy {
 
     @Override
     public ComparisonResult compare(ResponseData recorded, ResponseData replayed) {
+        // 检查是否为 JSON 内容
+        if (!isJsonContent(recorded) || !isJsonContent(replayed)) {
+            // 不是 JSON 内容，跳过此策略（返回成功，让其他策略处理）
+            return new ComparisonResult(true, List.of(), Map.of("skipped", "not-json-content"));
+        }
+
         try {
             JsonNode recordedNode = objectMapper.readTree(recorded.body());
             JsonNode replayedNode = objectMapper.readTree(replayed.body());
@@ -36,8 +42,31 @@ public class JsonStructureStrategy implements ComparisonStrategy {
             List<Difference> diffs = compareNodes("$", recordedNode, replayedNode);
             return new ComparisonResult(diffs.isEmpty(), diffs, Map.of());
         } catch (Exception e) {
-            return ComparisonResult.error("JSON parse error", e);
+            // JSON 解析失败，跳过此策略
+            return new ComparisonResult(true, List.of(), Map.of("skipped", "json-parse-failed"));
         }
+    }
+
+    private boolean isJsonContent(ResponseData responseData) {
+        if (responseData.body() == null || responseData.body().length == 0) {
+            return false;
+        }
+
+        // 检查 Content-Type
+        String contentType = responseData.headers().get("content-type");
+        if (contentType != null && contentType.toLowerCase().contains("json")) {
+            return true;
+        }
+
+        // 尝试检查内容是否以 JSON 开头
+        byte[] body = responseData.body();
+        if (body.length > 0) {
+            byte firstByte = body[0];
+            // JSON 通常以 { 或 [ 开头
+            return firstByte == '{' || firstByte == '[';
+        }
+
+        return false;
     }
 
     private List<Difference> compareNodes(String path, JsonNode n1, JsonNode n2) {

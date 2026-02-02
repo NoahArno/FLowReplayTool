@@ -147,7 +147,7 @@ public class FlowReplayCLI {
 
                     if (replayResult.success()) {
                         ComparisonResult comparisonResult = comparator.compare(record, replayResult.response());
-                        comparisonReports.add(new ComparisonReport(record, comparisonResult));
+                        comparisonReports.add(new ComparisonReport(record, replayResult.response(), comparisonResult));
                     } else {
                         // 回放失败的记录，创建失败的比对结果
                         ComparisonResult failedResult = new ComparisonResult(
@@ -155,7 +155,7 @@ public class FlowReplayCLI {
                             List.of(new Difference("replay", "error", "success", "failed: " + replayResult.errorMessage())),
                             Map.of()
                         );
-                        comparisonReports.add(new ComparisonReport(record, failedResult));
+                        comparisonReports.add(new ComparisonReport(record, null, failedResult));
                     }
                 }
 
