@@ -30,17 +30,35 @@ public class Comparator {
     }
 
     public ComparisonResult compare(TrafficRecord record, ResponseData replayedResponse) {
-        // 查找匹配的配置
-        ComparisonConfig config = findMatchingConfig(record.request().uri());
-        
+        // 根据协议类型选择合适的配置
+        ComparisonConfig config;
+        if ("SOCKET".equalsIgnoreCase(record.protocol()) || "TCP".equalsIgnoreCase(record.protocol())) {
+            // Socket 协议使用完全匹配策略
+            config = getSocketDefaultConfig();
+        } else {
+            // HTTP 协议查找匹配的配置
+            config = findMatchingConfig(record.request().uri());
+        }
+
         List<ComparisonResult> results = new ArrayList<>();
         for (StrategyConfig strategyConfig : config.getStrategies()) {
             ComparisonStrategy strategy = getStrategy(strategyConfig);
             if (strategy != null) {
-                results.add(strategy.compare(record.response(), replayedResponse));
+                ComparisonResult result = strategy.compare(record.response(), replayedResponse);
+                // 只添加非跳过的结果
+                if (result.metrics() == null || !result.metrics().containsKey("skipped")) {
+                    results.add(result);
+                }
             }
         }
-        
+
+        // 如果所有策略都被跳过，使用完全匹配策略作为兜底
+        if (results.isEmpty()) {
+            log.warn("All strategies skipped for record {}, using exact-match as fallback", record.id());
+            ComparisonStrategy exactMatch = new ExactMatchStrategy();
+            results.add(exactMatch.compare(record.response(), replayedResponse));
+        }
+
         return mergeResults(results);
     }
 
@@ -73,5 +91,12 @@ public class Comparator {
         List<StrategyConfig> strategies = new ArrayList<>();
         strategies.add(new StrategyConfig("http-status", null));
         return new ComparisonConfig("default", ".*", strategies);
+    }
+
+    private ComparisonConfig getSocketDefaultConfig() {
+        List<StrategyConfig> strategies = new ArrayList<>();
+        // Socket 协议使用完全匹配策略
+        strategies.add(new StrategyConfig("exact-match", null));
+        return new ComparisonConfig("socket-default", ".*", strategies);
     }
 }
