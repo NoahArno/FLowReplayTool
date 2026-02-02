@@ -43,12 +43,17 @@ public class TrafficReplayer {
 
     /**
      * 使用Virtual Threads并发回放流量
+     * 注意：使用数组来保证结果顺序与请求顺序一致
      */
     public List<ReplayResult> replay(List<TrafficRecord> records) {
-        List<ReplayResult> results = new CopyOnWriteArrayList<>();
+        // 使用数组来保证索引对应关系
+        ReplayResult[] resultsArray = new ReplayResult[records.size()];
 
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            for (TrafficRecord record : records) {
+            for (int i = 0; i < records.size(); i++) {
+                final int index = i;
+                final TrafficRecord record = records.get(i);
+
                 executor.submit(() -> {
                     try {
                         ReplayResult result;
@@ -57,16 +62,17 @@ public class TrafficReplayer {
                         } else {
                             result = replayHttp(record);
                         }
-                        results.add(result);
+                        resultsArray[index] = result;
                     } catch (Exception e) {
                         log.error("Replay failed for record: {}", record.id(), e);
-                        results.add(ReplayResult.failure(record.id(), 0, e.getMessage()));
+                        resultsArray[index] = ReplayResult.failure(record.id(), 0, e.getMessage());
                     }
                 });
             }
         }
 
-        return results;
+        // 转换为List返回
+        return List.of(resultsArray);
     }
 
     private ReplayResult replayHttp(TrafficRecord record) throws Exception {
