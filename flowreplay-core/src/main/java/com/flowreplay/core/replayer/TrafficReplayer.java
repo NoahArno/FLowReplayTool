@@ -113,8 +113,11 @@ public class TrafficReplayer {
         try (java.net.Socket socket = new java.net.Socket(host, port)) {
             socket.setSoTimeout(30000);
 
+            // 获取请求数据
+            byte[] requestBody = record.request().body();
+
             // 发送请求数据
-            socket.getOutputStream().write(record.request().body());
+            socket.getOutputStream().write(requestBody);
             socket.getOutputStream().flush();
 
             // 读取响应数据
