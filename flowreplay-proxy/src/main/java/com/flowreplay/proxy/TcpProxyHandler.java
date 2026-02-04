@@ -141,13 +141,20 @@ public class TcpProxyHandler extends ChannelInboundHandlerAdapter {
                 Map.of()
             );
 
+            Map<String, Object> metadata = Map.of(
+                "targetHost", targetHost,
+                "targetPort", targetPort,
+                "protocol", protocolParser,
+                "duration", duration
+            );
+
             TrafficRecord record = new TrafficRecord(
                 UUID.randomUUID().toString(),
                 "SOCKET",
                 Instant.now(),
                 requestData,
                 responseData,
-                Map.of("targetHost", targetHost, "targetPort", targetPort, "protocol", protocolParser)
+                metadata
             );
 
             recorder.record(record);

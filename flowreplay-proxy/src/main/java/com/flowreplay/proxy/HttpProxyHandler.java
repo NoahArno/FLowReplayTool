@@ -61,13 +61,18 @@ public class HttpProxyHandler extends ChannelInboundHandlerAdapter {
             ResponseData responseData = forwardRequest(request, startTime);
 
             // 录制流量
+            Map<String, Object> metadata = new HashMap<>();
+            metadata.put("targetHost", targetHost);
+            metadata.put("targetPort", targetPort);
+            metadata.put("duration", responseData.duration());
+
             TrafficRecord record = new TrafficRecord(
                 recordId,
                 "HTTP",
                 Instant.now(),
                 requestData,
                 responseData,
-                Map.of("targetHost", targetHost, "targetPort", targetPort)
+                metadata
             );
             recorder.record(record);
 

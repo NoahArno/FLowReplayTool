@@ -96,12 +96,13 @@ public class FlowReplayCLI {
     }
 
     private static void handleReplay(String[] args) {
-        // 解析参数：--input ./recordings --target http://localhost:8080 --compare --report ./report.html --config ./rules.yaml
+        // 解析参数：--input ./recordings --target http://localhost:8080 --compare --report ./report.html --config ./rules.yaml --service-parser uri
         String input = "./recordings";
         String target = "http://localhost:8080";
         boolean enableCompare = false;
         String reportPath = null;
         String configPath = null;
+        String serviceParser = null;
 
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
@@ -110,6 +111,7 @@ public class FlowReplayCLI {
                 case "--compare" -> enableCompare = true;
                 case "--report" -> reportPath = args[++i];
                 case "--config" -> configPath = args[++i];
+                case "--service-parser" -> serviceParser = args[++i];
             }
         }
 
@@ -144,10 +146,11 @@ public class FlowReplayCLI {
                 for (int i = 0; i < records.size(); i++) {
                     TrafficRecord record = records.get(i);
                     ReplayResult replayResult = results.get(i);
+                    java.time.Instant replayTimestamp = java.time.Instant.now();
 
                     if (replayResult.success()) {
                         ComparisonResult comparisonResult = comparator.compare(record, replayResult.response());
-                        comparisonReports.add(new ComparisonReport(record, replayResult.response(), comparisonResult));
+                        comparisonReports.add(new ComparisonReport(record, replayResult.response(), comparisonResult, replayResult.duration(), replayTimestamp));
                     } else {
                         // 回放失败的记录，创建失败的比对结果
                         ComparisonResult failedResult = new ComparisonResult(
@@ -155,7 +158,7 @@ public class FlowReplayCLI {
                             List.of(new Difference("replay", "error", "success", "failed: " + replayResult.errorMessage())),
                             Map.of()
                         );
-                        comparisonReports.add(new ComparisonReport(record, null, failedResult));
+                        comparisonReports.add(new ComparisonReport(record, null, failedResult, replayResult.duration(), replayTimestamp));
                     }
                 }
 
@@ -168,8 +171,11 @@ public class FlowReplayCLI {
                 // 生成HTML报告
                 if (reportPath != null) {
                     System.out.println("\nGenerating HTML report...");
+                    if (serviceParser != null) {
+                        System.out.println("Using service parser: " + serviceParser);
+                    }
                     HtmlReportGenerator reportGenerator = new HtmlReportGenerator();
-                    reportGenerator.generateReport(comparisonReports, reportPath);
+                    reportGenerator.generateReport(comparisonReports, reportPath, serviceParser);
                     System.out.println("Report generated: " + reportPath);
                 }
             }
@@ -190,8 +196,13 @@ public class FlowReplayCLI {
         System.out.println();
         System.out.println("Usage:");
         System.out.println("  flowreplay record --port <port> --target <host:port> --output <path> [--protocol http|tcp] [--protocol-parser <parser>]");
-        System.out.println("  flowreplay replay --input <path> --target <url> [--compare] [--report <path>] [--config <path>]");
+        System.out.println("  flowreplay replay --input <path> --target <url> [--compare] [--report <path>] [--config <path>] [--service-parser <parser>]");
         System.out.println("  flowreplay compare --recorded <path> --replayed <path>");
+        System.out.println();
+        System.out.println("Parameters:");
+        System.out.println("  --service-parser <parser>  接口名解析器，用于按接口统计（可选值：uri, esb，默认：uri）");
+        System.out.println("                             uri: 使用URI作为接口名");
+        System.out.println("                             esb: 从报文中解析ServiceCode作为接口名");
         System.out.println();
         System.out.println("Examples:");
         System.out.println("  # HTTP录制");
@@ -206,8 +217,11 @@ public class FlowReplayCLI {
         System.out.println("  # 回放");
         System.out.println("  flowreplay replay --input ./recordings --target http://localhost:9090");
         System.out.println();
-        System.out.println("  # 回放并比对，生成HTML报告");
+        System.out.println("  # 回放并比对，生成HTML报告（默认使用URI作为接口名）");
         System.out.println("  flowreplay replay --input ./recordings --target http://localhost:9090 --compare --report ./report.html");
+        System.out.println();
+        System.out.println("  # 使用ESB解析器，按ServiceCode统计接口");
+        System.out.println("  flowreplay replay --input ./recordings --target http://localhost:9090 --compare --report ./report.html --service-parser esb");
         System.out.println();
         System.out.println("  # 使用自定义比对规则");
         System.out.println("  flowreplay replay --input ./recordings --target http://localhost:9090 --compare --report ./report.html --config ./rules.yaml");

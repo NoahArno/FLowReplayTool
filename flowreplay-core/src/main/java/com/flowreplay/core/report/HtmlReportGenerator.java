@@ -3,21 +3,30 @@ package com.flowreplay.core.report;
 import com.flowreplay.core.model.ComparisonResult;
 import com.flowreplay.core.model.Difference;
 import com.flowreplay.core.model.TrafficRecord;
+import com.flowreplay.core.parser.ServiceNameParser;
+import com.flowreplay.core.parser.ServiceNameParserFactory;
 
 import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * HTML差异报告生成器 - IDEA风格
  */
 public class HtmlReportGenerator {
 
+    private ServiceNameParser serviceNameParser;
+
     public void generateReport(List<ComparisonReport> reports, String outputPath) throws IOException {
+        generateReport(reports, outputPath, null);
+    }
+
+    public void generateReport(List<ComparisonReport> reports, String outputPath, String parserName) throws IOException {
+        this.serviceNameParser = ServiceNameParserFactory.getParser(parserName);
+
         StringBuilder html = new StringBuilder();
 
         html.append("<!DOCTYPE html>\n");
@@ -89,6 +98,14 @@ public class HtmlReportGenerator {
         html.append("        .idea-diff-line.added { background: #ddfbe6; }\n");
         html.append("        .idea-diff-line.removed { background: #ffebe9; }\n");
         html.append("        .idea-diff-line.empty { background: #f5f5f5; }\n");
+
+        // 接口统计表格样式
+        html.append("        .service-stats-table { width: 100%; border-collapse: collapse; margin-top: 15px; }\n");
+        html.append("        .service-stats-table th, .service-stats-table td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }\n");
+        html.append("        .service-stats-table th { background: #f6f8fa; font-weight: bold; color: #333; }\n");
+        html.append("        .service-stats-table tbody tr:hover { background: #f8f9fa; }\n");
+        html.append("        .service-stats-table td:nth-child(2), .service-stats-table td:nth-child(3), .service-stats-table td:nth-child(4), .service-stats-table td:nth-child(5) { text-align: center; }\n");
+        html.append("        .service-stats-table th:nth-child(2), .service-stats-table th:nth-child(3), .service-stats-table th:nth-child(4), .service-stats-table th:nth-child(5) { text-align: center; }\n");
         html.append("    </style>\n");
     }
 
@@ -125,7 +142,7 @@ public class HtmlReportGenerator {
         double successRate = totalCount > 0 ? (matchedCount * 100.0 / totalCount) : 0;
 
         html.append("    <div class=\"summary\">\n");
-        html.append("        <h2>统计摘要</h2>\n");
+        html.append("        <h2>总体统计</h2>\n");
         html.append("        <div class=\"stat\">\n");
         html.append("            <div class=\"stat-value\">").append(totalCount).append("</div>\n");
         html.append("            <div class=\"stat-label\">总请求数</div>\n");
@@ -142,6 +159,78 @@ public class HtmlReportGenerator {
         html.append("            <div class=\"stat-value\">").append(String.format("%.2f%%", successRate)).append("</div>\n");
         html.append("            <div class=\"stat-label\">成功率</div>\n");
         html.append("        </div>\n");
+        html.append("    </div>\n");
+
+        // 按接口统计
+        appendServiceStatistics(html, reports);
+    }
+
+    private void appendServiceStatistics(StringBuilder html, List<ComparisonReport> reports) {
+        // 统计每个接口的数据
+        Map<String, ServiceStatistics> statsMap = new LinkedHashMap<>();
+
+        for (ComparisonReport report : reports) {
+            String serviceName = serviceNameParser.parseServiceName(report.record());
+            ServiceStatistics stats = statsMap.computeIfAbsent(serviceName, ServiceStatistics::new);
+
+            stats.incrementTotal();
+            if (report.result().matched()) {
+                stats.incrementMatched();
+            } else {
+                stats.incrementMismatched();
+            }
+
+            // 添加耗时统计
+            long originalDuration = getOriginalDuration(report.record());
+            long replayDuration = report.replayDuration();
+            stats.addDuration(originalDuration, replayDuration);
+        }
+
+        // 生成HTML表格
+        html.append("    <div class=\"summary\">\n");
+        html.append("        <h2>接口统计</h2>\n");
+        html.append("        <table class=\"service-stats-table\">\n");
+        html.append("            <thead>\n");
+        html.append("                <tr>\n");
+        html.append("                    <th rowspan=\"2\">接口名称</th>\n");
+        html.append("                    <th rowspan=\"2\">总请求数</th>\n");
+        html.append("                    <th rowspan=\"2\">匹配成功</th>\n");
+        html.append("                    <th rowspan=\"2\">匹配失败</th>\n");
+        html.append("                    <th rowspan=\"2\">成功率</th>\n");
+        html.append("                    <th colspan=\"3\">原始耗时(ms)</th>\n");
+        html.append("                    <th colspan=\"3\">回放耗时(ms)</th>\n");
+        html.append("                </tr>\n");
+        html.append("                <tr>\n");
+        html.append("                    <th>平均</th>\n");
+        html.append("                    <th>最小</th>\n");
+        html.append("                    <th>最大</th>\n");
+        html.append("                    <th>平均</th>\n");
+        html.append("                    <th>最小</th>\n");
+        html.append("                    <th>最大</th>\n");
+        html.append("                </tr>\n");
+        html.append("            </thead>\n");
+        html.append("            <tbody>\n");
+
+        for (ServiceStatistics stats : statsMap.values()) {
+            html.append("                <tr>\n");
+            html.append("                    <td>").append(escapeHtml(stats.getServiceName())).append("</td>\n");
+            html.append("                    <td>").append(stats.getTotalCount()).append("</td>\n");
+            html.append("                    <td class=\"success\">").append(stats.getMatchedCount()).append("</td>\n");
+            html.append("                    <td class=\"failed\">").append(stats.getMismatchedCount()).append("</td>\n");
+            html.append("                    <td>").append(String.format("%.2f%%", stats.getSuccessRate())).append("</td>\n");
+            // 原始耗时
+            html.append("                    <td>").append(String.format("%.2f", stats.getOriginalAvgDuration())).append("</td>\n");
+            html.append("                    <td>").append(stats.getOriginalMinDuration()).append("</td>\n");
+            html.append("                    <td>").append(stats.getOriginalMaxDuration()).append("</td>\n");
+            // 回放耗时
+            html.append("                    <td>").append(String.format("%.2f", stats.getReplayAvgDuration())).append("</td>\n");
+            html.append("                    <td>").append(stats.getReplayMinDuration()).append("</td>\n");
+            html.append("                    <td>").append(stats.getReplayMaxDuration()).append("</td>\n");
+            html.append("                </tr>\n");
+        }
+
+        html.append("            </tbody>\n");
+        html.append("        </table>\n");
         html.append("    </div>\n");
     }
 
@@ -164,14 +253,27 @@ public class HtmlReportGenerator {
     private void appendSingleReport(StringBuilder html, ComparisonReport report, int index) {
         String cssClass = report.result().matched() ? "matched" : "mismatched";
         TrafficRecord record = report.record();
+        String serviceName = serviceNameParser.parseServiceName(record);
 
         html.append("        <div class=\"report-item ").append(cssClass).append("\">\n");
         html.append("            <h3>请求 #").append(index + 1).append(" - ").append(escapeHtml(record.id())).append("</h3>\n");
         html.append("            <p><strong>协议:</strong> ").append(record.protocol()).append("</p>\n");
         html.append("            <p><strong>URI:</strong> ").append(escapeHtml(record.request().uri())).append("</p>\n");
         html.append("            <p><strong>方法:</strong> ").append(record.request().method()).append("</p>\n");
+        html.append("            <p><strong>接口名:</strong> ").append(escapeHtml(serviceName)).append("</p>\n");
         html.append("            <p><strong>状态:</strong> <span class=\"").append(cssClass).append("\">")
                    .append(report.result().matched() ? "✓ 匹配" : "✗ 不匹配").append("</span></p>\n");
+
+        // 显示时间信息
+        long originalDuration = getOriginalDuration(record);
+        long replayDuration = report.replayDuration();
+        String originalTime = formatTimestamp(record.timestamp());
+        String replayTime = formatTimestamp(report.replayTimestamp());
+
+        html.append("            <p><strong>原始请求时间:</strong> ").append(originalTime).append("</p>\n");
+        html.append("            <p><strong>原始耗时:</strong> ").append(originalDuration).append(" ms</p>\n");
+        html.append("            <p><strong>回放请求时间:</strong> ").append(replayTime).append("</p>\n");
+        html.append("            <p><strong>回放耗时:</strong> ").append(replayDuration).append(" ms</p>\n");
 
         // 显示原始请求
         appendRequestDetails(html, record, index);
@@ -371,6 +473,30 @@ public class HtmlReportGenerator {
                    .replace(">", "&gt;")
                    .replace("\"", "&quot;")
                    .replace("'", "&#39;");
+    }
+
+    /**
+     * 获取原始请求的耗时（从metadata中读取）
+     */
+    private long getOriginalDuration(TrafficRecord record) {
+        Object duration = record.metadata().get("duration");
+        if (duration instanceof Long) {
+            return (Long) duration;
+        } else if (duration instanceof Integer) {
+            return ((Integer) duration).longValue();
+        }
+        return 0L;
+    }
+
+    /**
+     * 格式化时间戳
+     */
+    private String formatTimestamp(java.time.Instant timestamp) {
+        if (timestamp == null) {
+            return "N/A";
+        }
+        return DateTimeFormatter.ISO_LOCAL_DATE_TIME
+            .format(timestamp.atZone(java.time.ZoneId.systemDefault()));
     }
 
     // 内部类：差异行
