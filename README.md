@@ -156,7 +156,7 @@ flowreplay record --port <port> --target <host:port> --output <path> [选项]
 **示例**：
 ```bash
 # HTTP 录制
-flowreplay record --port 8080 --target localhost:8080 --output ./recordings
+flowreplay record --port 8081 --target localhost:8080 --output ./recordings
 
 # TCP 原始模式录制
 flowreplay record --protocol tcp --port 9999 --target localhost:9999 --output ./recordings-tcp --protocol-parser raw
