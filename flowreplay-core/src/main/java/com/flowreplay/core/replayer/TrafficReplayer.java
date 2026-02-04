@@ -27,6 +27,7 @@ public class TrafficReplayer {
     private static final Logger log = LoggerFactory.getLogger(TrafficReplayer.class);
     private final HttpClient httpClient;
     private final String targetUrl;
+    private final boolean sequentialMode;  // 是否顺序回放
 
     // Java HttpClient受限的header列表
     private static final Set<String> RESTRICTED_HEADERS = Set.of(
@@ -34,7 +35,12 @@ public class TrafficReplayer {
     );
 
     public TrafficReplayer(String targetUrl) {
+        this(targetUrl, true);  // 默认使用顺序回放
+    }
+
+    public TrafficReplayer(String targetUrl, boolean sequentialMode) {
         this.targetUrl = targetUrl;
+        this.sequentialMode = sequentialMode;
         this.httpClient = HttpClient.newBuilder()
             .version(HttpClient.Version.HTTP_1_1)
             .connectTimeout(Duration.ofSeconds(10))
@@ -42,10 +48,53 @@ public class TrafficReplayer {
     }
 
     /**
-     * 使用Virtual Threads并发回放流量
-     * 注意：使用数组来保证结果顺序与请求顺序一致
+     * 回放流量
+     * 支持顺序回放和并发回放两种模式
      */
     public List<ReplayResult> replay(List<TrafficRecord> records) {
+        if (sequentialMode) {
+            return replaySequential(records);
+        } else {
+            return replayConcurrent(records);
+        }
+    }
+
+    /**
+     * 顺序回放：按照录制顺序依次执行
+     * 保证请求的执行顺序与录制时一致
+     */
+    private List<ReplayResult> replaySequential(List<TrafficRecord> records) {
+        log.info("Starting sequential replay for {} records", records.size());
+        List<ReplayResult> results = new java.util.ArrayList<>();
+
+        for (int i = 0; i < records.size(); i++) {
+            TrafficRecord record = records.get(i);
+            log.info("Replaying record {}/{}: {}", i + 1, records.size(), record.id());
+
+            try {
+                ReplayResult result;
+                if ("SOCKET".equals(record.protocol())) {
+                    result = replayTcp(record);
+                } else {
+                    result = replayHttp(record);
+                }
+                results.add(result);
+            } catch (Exception e) {
+                log.error("Replay failed for record: {}", record.id(), e);
+                results.add(ReplayResult.failure(record.id(), 0, e.getMessage()));
+            }
+        }
+
+        log.info("Sequential replay completed");
+        return results;
+    }
+
+    /**
+     * 并发回放：使用Virtual Threads并发执行
+     * 注意：不保证执行顺序，但保证结果顺序与请求顺序一致
+     */
+    private List<ReplayResult> replayConcurrent(List<TrafficRecord> records) {
+        log.info("Starting concurrent replay for {} records", records.size());
         // 使用数组来保证索引对应关系
         ReplayResult[] resultsArray = new ReplayResult[records.size()];
 
@@ -71,6 +120,7 @@ public class TrafficReplayer {
             }
         }
 
+        log.info("Concurrent replay completed");
         // 转换为List返回
         return List.of(resultsArray);
     }

@@ -96,13 +96,14 @@ public class FlowReplayCLI {
     }
 
     private static void handleReplay(String[] args) {
-        // 解析参数：--input ./recordings --target http://localhost:8080 --compare --report ./report.html --config ./rules.yaml --service-parser uri
+        // 解析参数：--input ./recordings --target http://localhost:8080 --compare --report ./report.html --config ./rules.yaml --service-parser uri --mode sequential
         String input = "./recordings";
         String target = "http://localhost:8080";
         boolean enableCompare = false;
         String reportPath = null;
         String configPath = null;
         String serviceParser = null;
+        String replayMode = "sequential";  // 默认顺序回放
 
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
@@ -112,11 +113,13 @@ public class FlowReplayCLI {
                 case "--report" -> reportPath = args[++i];
                 case "--config" -> configPath = args[++i];
                 case "--service-parser" -> serviceParser = args[++i];
+                case "--mode" -> replayMode = args[++i];
             }
         }
 
         System.out.println("Replaying traffic from: " + input);
         System.out.println("Target: " + target);
+        System.out.println("Replay mode: " + replayMode);
 
         try {
             TrafficStorage storage = new FileStorage(input);
@@ -124,7 +127,8 @@ public class FlowReplayCLI {
 
             System.out.println("Found " + records.size() + " records");
 
-            TrafficReplayer replayer = new TrafficReplayer(target);
+            boolean sequentialMode = !"concurrent".equalsIgnoreCase(replayMode);
+            TrafficReplayer replayer = new TrafficReplayer(target, sequentialMode);
             List<ReplayResult> results = replayer.replay(records);
 
             long successCount = results.stream().filter(ReplayResult::success).count();
@@ -196,13 +200,16 @@ public class FlowReplayCLI {
         System.out.println();
         System.out.println("Usage:");
         System.out.println("  flowreplay record --port <port> --target <host:port> --output <path> [--protocol http|tcp] [--protocol-parser <parser>]");
-        System.out.println("  flowreplay replay --input <path> --target <url> [--compare] [--report <path>] [--config <path>] [--service-parser <parser>]");
+        System.out.println("  flowreplay replay --input <path> --target <url> [--compare] [--report <path>] [--config <path>] [--service-parser <parser>] [--mode <mode>]");
         System.out.println("  flowreplay compare --recorded <path> --replayed <path>");
         System.out.println();
         System.out.println("Parameters:");
         System.out.println("  --service-parser <parser>  接口名解析器，用于按接口统计（可选值：uri, esb，默认：uri）");
         System.out.println("                             uri: 使用URI作为接口名");
         System.out.println("                             esb: 从报文中解析ServiceCode作为接口名");
+        System.out.println("  --mode <mode>              回放模式（可选值：sequential, concurrent，默认：sequential）");
+        System.out.println("                             sequential: 顺序回放，按录制顺序依次执行");
+        System.out.println("                             concurrent: 并发回放，使用Virtual Threads并发执行");
         System.out.println();
         System.out.println("Examples:");
         System.out.println("  # HTTP录制");
@@ -222,6 +229,12 @@ public class FlowReplayCLI {
         System.out.println();
         System.out.println("  # 使用ESB解析器，按ServiceCode统计接口");
         System.out.println("  flowreplay replay --input ./recordings --target http://localhost:9090 --compare --report ./report.html --service-parser esb");
+        System.out.println();
+        System.out.println("  # 顺序回放（默认模式，保证执行顺序）");
+        System.out.println("  flowreplay replay --input ./recordings --target http://localhost:9090 --mode sequential");
+        System.out.println();
+        System.out.println("  # 并发回放（高性能，但不保证执行顺序）");
+        System.out.println("  flowreplay replay --input ./recordings --target http://localhost:9090 --mode concurrent");
         System.out.println();
         System.out.println("  # 使用自定义比对规则");
         System.out.println("  flowreplay replay --input ./recordings --target http://localhost:9090 --compare --report ./report.html --config ./rules.yaml");
