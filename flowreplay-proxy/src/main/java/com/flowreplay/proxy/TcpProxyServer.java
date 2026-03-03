@@ -1,6 +1,7 @@
 package com.flowreplay.proxy;
 
 import com.flowreplay.core.recorder.TrafficRecorder;
+import com.flowreplay.core.model.TrafficRecord;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
@@ -11,6 +12,8 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.function.Consumer;
 
 /**
  * TCP代理服务器
@@ -23,14 +26,22 @@ public class TcpProxyServer {
     private final int targetPort;
     private final TrafficRecorder recorder;
     private final String protocolParser;
+    private final Consumer<TrafficRecord> replayConsumer;
 
     public TcpProxyServer(int port, String targetHost, int targetPort,
                           TrafficRecorder recorder, String protocolParser) {
+        this(port, targetHost, targetPort, recorder, protocolParser, null);
+    }
+
+    public TcpProxyServer(int port, String targetHost, int targetPort,
+                          TrafficRecorder recorder, String protocolParser,
+                          Consumer<TrafficRecord> replayConsumer) {
         this.port = port;
         this.targetHost = targetHost;
         this.targetPort = targetPort;
         this.recorder = recorder;
         this.protocolParser = protocolParser;
+        this.replayConsumer = replayConsumer;
     }
 
     public void start() throws InterruptedException {
@@ -46,7 +57,7 @@ public class TcpProxyServer {
                  @Override
                  protected void initChannel(SocketChannel ch) {
                      ch.pipeline().addLast(new TcpProxyHandler(
-                         targetHost, targetPort, recorder, protocolParser));
+                         targetHost, targetPort, recorder, protocolParser, replayConsumer));
                  }
              });
 

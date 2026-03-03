@@ -1,6 +1,7 @@
 package com.flowreplay.proxy;
 
 import com.flowreplay.core.recorder.TrafficRecorder;
+import com.flowreplay.core.model.TrafficRecord;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
@@ -13,6 +14,8 @@ import io.netty.handler.codec.http.HttpServerCodec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.function.Consumer;
+
 /**
  * HTTP代理服务器
  */
@@ -23,12 +26,19 @@ public class HttpProxyServer {
     private final String targetHost;
     private final int targetPort;
     private final TrafficRecorder recorder;
+    private final Consumer<TrafficRecord> replayConsumer;
 
     public HttpProxyServer(int port, String targetHost, int targetPort, TrafficRecorder recorder) {
+        this(port, targetHost, targetPort, recorder, null);
+    }
+
+    public HttpProxyServer(int port, String targetHost, int targetPort, TrafficRecorder recorder,
+                           Consumer<TrafficRecord> replayConsumer) {
         this.port = port;
         this.targetHost = targetHost;
         this.targetPort = targetPort;
         this.recorder = recorder;
+        this.replayConsumer = replayConsumer;
     }
 
     public void start() throws InterruptedException {
@@ -44,7 +54,7 @@ public class HttpProxyServer {
                  protected void initChannel(SocketChannel ch) {
                      ch.pipeline().addLast(new HttpServerCodec());
                      ch.pipeline().addLast(new HttpObjectAggregator(10 * 1024 * 1024));
-                     ch.pipeline().addLast(new HttpProxyHandler(targetHost, targetPort, recorder));
+                     ch.pipeline().addLast(new HttpProxyHandler(targetHost, targetPort, recorder, replayConsumer));
                  }
              });
 

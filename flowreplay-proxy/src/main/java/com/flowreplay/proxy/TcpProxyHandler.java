@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 /**
  * TCP代理处理器
@@ -25,6 +26,7 @@ public class TcpProxyHandler extends ChannelInboundHandlerAdapter {
     private final int targetPort;
     private final TrafficRecorder recorder;
     private final String protocolParser;
+    private final Consumer<TrafficRecord> replayConsumer;
 
     private Channel outboundChannel;
     private ByteBuf requestBuffer;
@@ -33,10 +35,17 @@ public class TcpProxyHandler extends ChannelInboundHandlerAdapter {
 
     public TcpProxyHandler(String targetHost, int targetPort,
                            TrafficRecorder recorder, String protocolParser) {
+        this(targetHost, targetPort, recorder, protocolParser, null);
+    }
+
+    public TcpProxyHandler(String targetHost, int targetPort,
+                           TrafficRecorder recorder, String protocolParser,
+                           Consumer<TrafficRecord> replayConsumer) {
         this.targetHost = targetHost;
         this.targetPort = targetPort;
         this.recorder = recorder;
         this.protocolParser = protocolParser;
+        this.replayConsumer = replayConsumer;
     }
 
     @Override
@@ -158,6 +167,7 @@ public class TcpProxyHandler extends ChannelInboundHandlerAdapter {
             );
 
             recorder.record(record);
+            submitForLiveReplay(record);
         } catch (Exception e) {
             log.error("Failed to record TCP traffic", e);
         } finally {
@@ -167,6 +177,17 @@ public class TcpProxyHandler extends ChannelInboundHandlerAdapter {
             if (responseBuffer != null) {
                 responseBuffer.release();
             }
+        }
+    }
+
+    private void submitForLiveReplay(TrafficRecord record) {
+        if (replayConsumer == null) {
+            return;
+        }
+        try {
+            replayConsumer.accept(record);
+        } catch (Exception e) {
+            log.error("Failed to submit live replay task for record: {}", record.id(), e);
         }
     }
 

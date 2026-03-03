@@ -19,6 +19,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 /**
  * HTTP代理处理器
@@ -29,6 +30,7 @@ public class HttpProxyHandler extends ChannelInboundHandlerAdapter {
     private final String targetHost;
     private final int targetPort;
     private final TrafficRecorder recorder;
+    private final Consumer<TrafficRecord> replayConsumer;
 
     // Java HttpClient受限的header列表
     private static final Set<String> RESTRICTED_HEADERS = Set.of(
@@ -36,9 +38,14 @@ public class HttpProxyHandler extends ChannelInboundHandlerAdapter {
     );
 
     public HttpProxyHandler(String targetHost, int targetPort, TrafficRecorder recorder) {
+        this(targetHost, targetPort, recorder, null);
+    }
+
+    public HttpProxyHandler(String targetHost, int targetPort, TrafficRecorder recorder, Consumer<TrafficRecord> replayConsumer) {
         this.targetHost = targetHost;
         this.targetPort = targetPort;
         this.recorder = recorder;
+        this.replayConsumer = replayConsumer;
     }
 
     @Override
@@ -75,11 +82,23 @@ public class HttpProxyHandler extends ChannelInboundHandlerAdapter {
                 metadata
             );
             recorder.record(record);
+            submitForLiveReplay(record);
 
             // 返回响应给客户端
             sendResponse(ctx, responseData, keepAlive);
         } finally {
             ReferenceCountUtil.release(request);
+        }
+    }
+
+    private void submitForLiveReplay(TrafficRecord record) {
+        if (replayConsumer == null) {
+            return;
+        }
+        try {
+            replayConsumer.accept(record);
+        } catch (Exception e) {
+            log.error("Failed to submit live replay task for record: {}", record.id(), e);
         }
     }
 

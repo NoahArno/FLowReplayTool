@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -97,6 +98,36 @@ class HttpProxyHandlerTest {
         FullHttpResponse response = (FullHttpResponse) outbound;
         assertEquals(200, response.status().code());
         assertEquals("hahaha", response.content().toString(StandardCharsets.UTF_8));
+
+        response.release();
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    void invokesLiveReplayConsumerAfterRecording() {
+        AtomicReference<TrafficRecord> captured = new AtomicReference<>();
+        EmbeddedChannel channel = new EmbeddedChannel(new HttpProxyHandler("localhost", upstreamPort, noopRecorder(), captured::set));
+
+        FullHttpRequest request = new DefaultFullHttpRequest(
+            HttpVersion.HTTP_1_1,
+            HttpMethod.GET,
+            "/api/test",
+            Unpooled.EMPTY_BUFFER
+        );
+        request.headers().set(HttpHeaderNames.HOST, "localhost:8081");
+
+        channel.writeInbound(request);
+        channel.runPendingTasks();
+        channel.flushOutbound();
+
+        FullHttpResponse response = channel.readOutbound();
+        assertNotNull(response);
+        assertEquals(200, response.status().code());
+
+        TrafficRecord record = captured.get();
+        assertNotNull(record);
+        assertEquals("HTTP", record.protocol());
+        assertEquals("/api/test", record.request().uri());
 
         response.release();
         channel.finishAndReleaseAll();
