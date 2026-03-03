@@ -3,6 +3,7 @@ package com.flowreplay.cli;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -34,6 +35,7 @@ class FlowReplayCLITest {
         assertEquals("./live-report.html", options.reportPath());
         assertEquals("./comparison-rules.yaml", options.configPath());
         assertEquals("esb", options.serviceParser());
+        assertNotNull(options.liveReportCachePath());
     }
 
     @Test
@@ -48,6 +50,21 @@ class FlowReplayCLITest {
 
         assertTrue(options.enableCompare());
         assertEquals("./live-report.html", options.reportPath());
+        assertTrue(options.liveReportCachePath().contains("live-report-cache-"));
+    }
+
+    @Test
+    void usesCustomLiveCachePath() {
+        String[] args = {
+            "record",
+            "--replay-target", "http://localhost:9090",
+            "--compare",
+            "--cache", "./cache/live.jsonl"
+        };
+
+        FlowReplayCLI.RecordCommandOptions options = FlowReplayCLI.parseRecordOptions(args, false);
+        assertTrue(options.enableCompare());
+        assertEquals("./cache/live.jsonl", options.liveReportCachePath());
     }
 
     @Test
@@ -85,5 +102,34 @@ class FlowReplayCLITest {
             () -> FlowReplayCLI.parseRecordOptions(args, false)
         );
         assertEquals("--config/--service-parser requires --compare or --report", error.getMessage());
+    }
+
+    @Test
+    void parsesReportFromCacheOptions() {
+        String[] args = {
+            "report-from-cache",
+            "--cache", "./cache/live.jsonl",
+            "--report", "./manual-report.html",
+            "--service-parser", "uri"
+        };
+
+        FlowReplayCLI.ReportFromCacheOptions options = FlowReplayCLI.parseReportFromCacheOptions(args);
+        assertEquals("./cache/live.jsonl", options.cachePath());
+        assertEquals("./manual-report.html", options.reportPath());
+        assertEquals("uri", options.serviceParser());
+    }
+
+    @Test
+    void failsWhenCacheMissingForReportFromCache() {
+        String[] args = {
+            "report-from-cache",
+            "--report", "./manual-report.html"
+        };
+
+        IllegalArgumentException error = assertThrows(
+            IllegalArgumentException.class,
+            () -> FlowReplayCLI.parseReportFromCacheOptions(args)
+        );
+        assertEquals("--cache is required", error.getMessage());
     }
 }

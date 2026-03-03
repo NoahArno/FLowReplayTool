@@ -71,6 +71,9 @@ JAR_PATH=flowreplay-cli/target/flowreplay-cli-1.0.0-SNAPSHOT-jar-with-dependenci
 # 边录制边回放，同时比对并在结束时生成报告
 <JAVA_BIN> -jar <JAR_PATH> rr --port 8080 --target localhost:8081 --output ./recordings --replay-target http://localhost:9090 --compare --report ./live-report.html
 
+# 指定缓存文件（每条实时比对结果都会写入，进程异常退出后可手动恢复报告）
+<JAVA_BIN> -jar <JAR_PATH> rr --port 8080 --target localhost:8081 --output ./recordings --replay-target http://localhost:9090 --compare --report ./live-report.html --cache ./recordings/live-report-cache.jsonl
+
 # 也可以用 record + --replay-target/--replay
 <JAVA_BIN> -jar <JAR_PATH> record --port 8080 --target localhost:8081 --output ./recordings --replay http://localhost:9090
 ```
@@ -93,6 +96,11 @@ JAR_PATH=flowreplay-cli/target/flowreplay-cli-1.0.0-SNAPSHOT-jar-with-dependenci
 
 # 自定义比对规则
 <JAVA_BIN> -jar <JAR_PATH> replay --input ./recordings --target http://localhost:9090 --compare --report ./report.html --config ./comparison-rules.yaml
+```
+
+### 6. 从缓存手动生成报告（异常退出恢复）
+```bash
+<JAVA_BIN> -jar <JAR_PATH> report-from-cache --cache ./recordings/live-report-cache.jsonl --report ./manual-report.html
 ```
 
 比对完成后会输出总请求数、匹配成功数、匹配失败数、成功率和报告路径。
@@ -176,7 +184,7 @@ JAR_PATH=flowreplay-cli/target/flowreplay-cli-1.0.0-SNAPSHOT-jar-with-dependenci
 
 ### flowreplay-cli
 
-命令行工具，提供 `record`、`record-replay(rr)`、`replay` 命令（`compare` 子命令暂未实现）。
+命令行工具，提供 `record`、`record-replay(rr)`、`replay`、`report-from-cache` 命令（`compare` 子命令暂未实现）。
 
 ## 技术栈
 

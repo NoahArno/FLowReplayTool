@@ -1,5 +1,7 @@
 package com.flowreplay.cli;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.flowreplay.core.comparator.ComparisonConfig;
 import com.flowreplay.core.comparator.ComparisonConfigLoader;
 import com.flowreplay.core.comparator.Comparator;
@@ -18,8 +20,18 @@ import com.flowreplay.core.storage.TrafficStorage;
 import com.flowreplay.proxy.HttpProxyServer;
 import com.flowreplay.proxy.TcpProxyServer;
 
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -48,6 +60,7 @@ public class FlowReplayCLI {
             case "record" -> handleRecord(args, false);
             case "record-replay", "rr" -> handleRecord(args, true);
             case "replay" -> handleReplay(args);
+            case "report-from-cache", "report-cache" -> handleReportFromCache(args);
             case "compare" -> handleCompare(args);
             default -> {
                 System.err.println("Unknown command: " + command);
@@ -77,7 +90,8 @@ public class FlowReplayCLI {
             options.enableCompare(),
             options.reportPath(),
             options.configPath(),
-            options.serviceParser()
+            options.serviceParser(),
+            options.liveReportCachePath()
         );
 
         System.out.println("Starting " + options.protocol().toUpperCase() + " proxy on port " + options.port());
@@ -93,6 +107,7 @@ public class FlowReplayCLI {
                 if (options.serviceParser() != null) {
                     System.out.println("Live report parser: " + options.serviceParser());
                 }
+                System.out.println("Live report cache: " + options.liveReportCachePath());
             }
         } else {
             System.out.println("Live replay disabled");
@@ -261,6 +276,33 @@ public class FlowReplayCLI {
         System.out.println("Use replay --compare to compare recorded vs replayed responses.");
     }
 
+    private static void handleReportFromCache(String[] args) {
+        ReportFromCacheOptions options;
+        try {
+            options = parseReportFromCacheOptions(args);
+        } catch (IllegalArgumentException e) {
+            System.err.println("Invalid report-from-cache arguments: " + e.getMessage());
+            printUsage();
+            return;
+        }
+
+        try {
+            List<ComparisonReport> reports = LiveReportCacheStore.readReports(options.cachePath());
+            if (reports.isEmpty()) {
+                System.out.println("No cached comparison data found: " + options.cachePath());
+                return;
+            }
+
+            HtmlReportGenerator reportGenerator = new HtmlReportGenerator();
+            reportGenerator.generateReport(reports, options.reportPath(), options.serviceParser());
+            System.out.println("Report generated from cache: " + options.reportPath());
+            System.out.println("Cached records used: " + reports.size());
+        } catch (Exception e) {
+            System.err.println("Failed to generate report from cache: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
     static RecordCommandOptions parseRecordOptions(String[] args, boolean requireReplayTarget) {
         int port = 8080;
         String target = "localhost:8081";
@@ -272,6 +314,7 @@ public class FlowReplayCLI {
         String reportPath = null;
         String configPath = null;
         String serviceParser = null;
+        String liveReportCachePath = null;
 
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
@@ -288,6 +331,7 @@ public class FlowReplayCLI {
                 case "--report" -> reportPath = requireOptionValue(args, ++i, "--report");
                 case "--config" -> configPath = requireOptionValue(args, ++i, "--config");
                 case "--service-parser" -> serviceParser = requireOptionValue(args, ++i, "--service-parser");
+                case "--cache" -> liveReportCachePath = requireOptionValue(args, ++i, "--cache");
                 default -> {
                     if (args[i].startsWith("--")) {
                         throw new IllegalArgumentException("Unknown option for record: " + args[i]);
@@ -304,17 +348,25 @@ public class FlowReplayCLI {
             enableCompare = true;
         }
 
+        if (liveReportCachePath != null && !enableCompare) {
+            enableCompare = true;
+        }
+
         if ((configPath != null || serviceParser != null) && !enableCompare) {
             throw new IllegalArgumentException("--config/--service-parser requires --compare or --report");
         }
 
-        boolean replayRelatedCompareOption = enableCompare || reportPath != null || configPath != null || serviceParser != null;
+        boolean replayRelatedCompareOption = enableCompare || reportPath != null || configPath != null || serviceParser != null || liveReportCachePath != null;
         if (replayRelatedCompareOption && (replayTarget == null || replayTarget.isBlank())) {
             throw new IllegalArgumentException("Live compare/report options require --replay-target <url|host:port>");
         }
 
         if (requireReplayTarget && (replayTarget == null || replayTarget.isBlank())) {
             throw new IllegalArgumentException("record-replay/rr requires --replay-target <url|host:port>");
+        }
+
+        if (enableCompare && liveReportCachePath == null) {
+            liveReportCachePath = buildDefaultLiveCachePath(output);
         }
 
         return new RecordCommandOptions(
@@ -327,8 +379,44 @@ public class FlowReplayCLI {
             enableCompare,
             reportPath,
             configPath,
-            serviceParser
+            serviceParser,
+            liveReportCachePath
         );
+    }
+
+    static ReportFromCacheOptions parseReportFromCacheOptions(String[] args) {
+        String cachePath = null;
+        String reportPath = null;
+        String serviceParser = null;
+
+        for (int i = 1; i < args.length; i++) {
+            switch (args[i]) {
+                case "--cache" -> cachePath = requireOptionValue(args, ++i, "--cache");
+                case "--report" -> reportPath = requireOptionValue(args, ++i, "--report");
+                case "--service-parser" -> serviceParser = requireOptionValue(args, ++i, "--service-parser");
+                default -> {
+                    if (args[i].startsWith("--")) {
+                        throw new IllegalArgumentException("Unknown option for report-from-cache: " + args[i]);
+                    }
+                }
+            }
+        }
+
+        if (cachePath == null || cachePath.isBlank()) {
+            throw new IllegalArgumentException("--cache is required");
+        }
+        if (reportPath == null || reportPath.isBlank()) {
+            throw new IllegalArgumentException("--report is required");
+        }
+
+        return new ReportFromCacheOptions(cachePath, reportPath, serviceParser);
+    }
+
+    private static String buildDefaultLiveCachePath(String output) {
+        String ts = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+            .format(Instant.now().atZone(ZoneId.systemDefault()));
+        Path cachePath = Paths.get(output).resolve("live-report-cache-" + ts + ".jsonl");
+        return cachePath.toString();
     }
 
     private static HostPort parseHostPort(String target, int defaultPort) {
@@ -383,9 +471,10 @@ public class FlowReplayCLI {
         System.out.println("FlowReplay - Traffic Recording and Replay Tool");
         System.out.println();
         System.out.println("Usage:");
-        System.out.println("  flowreplay record [--port <port>] [--target <host:port>] [--output <path>] [--protocol http|tcp] [--protocol-parser <parser>] [--replay-target <url|host:port>] [--compare] [--report <path>] [--config <path>] [--service-parser <parser>]");
-        System.out.println("  flowreplay record-replay|rr [--port <port>] [--target <host:port>] [--output <path>] --replay-target <url|host:port> [--protocol http|tcp] [--protocol-parser <parser>] [--compare] [--report <path>] [--config <path>] [--service-parser <parser>]");
+        System.out.println("  flowreplay record [--port <port>] [--target <host:port>] [--output <path>] [--protocol http|tcp] [--protocol-parser <parser>] [--replay-target <url|host:port>] [--compare] [--report <path>] [--cache <path>] [--config <path>] [--service-parser <parser>]");
+        System.out.println("  flowreplay record-replay|rr [--port <port>] [--target <host:port>] [--output <path>] --replay-target <url|host:port> [--protocol http|tcp] [--protocol-parser <parser>] [--compare] [--report <path>] [--cache <path>] [--config <path>] [--service-parser <parser>]");
         System.out.println("  flowreplay replay --input <path> --target <url|host:port> [--compare] [--report <path>] [--config <path>] [--service-parser <parser>] [--mode <mode>]");
+        System.out.println("  flowreplay report-from-cache --cache <path> --report <path> [--service-parser <parser>]");
         System.out.println("  flowreplay compare (not implemented, use replay --compare)");
         System.out.println();
         System.out.println("Key parameters:");
@@ -393,6 +482,7 @@ public class FlowReplayCLI {
         System.out.println("  --replay <url|host:port>         Alias of --replay-target");
         System.out.println("  --compare                        Compare recorded and replayed responses");
         System.out.println("  --report <path>                  HTML report output path (auto-enables --compare)");
+        System.out.println("  --cache <path>                   Cache live comparison data to JSONL");
         System.out.println("  --config <path>                  Comparison config YAML");
         System.out.println("  --mode <mode>                    Replay mode: sequential|concurrent (default: sequential)");
         System.out.println("  --service-parser <parser>        Report parser: uri|esb (default: uri)");
@@ -404,6 +494,7 @@ public class FlowReplayCLI {
         System.out.println("  flowreplay record --port 8080 --target localhost:8081 --output ./recordings --replay http://localhost:9090");
         System.out.println("  flowreplay replay --input ./recordings --target http://localhost:9090 --mode concurrent");
         System.out.println("  flowreplay replay --input ./recordings --target http://localhost:9090 --compare --report ./report.html");
+        System.out.println("  flowreplay report-from-cache --cache ./recordings/live-report-cache-20260303-120000.jsonl --report ./manual-report.html");
     }
 
     private static boolean isSelfProxyLoop(int port, HostPort target) {
@@ -429,7 +520,22 @@ public class FlowReplayCLI {
         boolean enableCompare,
         String reportPath,
         String configPath,
+        String serviceParser,
+        String liveReportCachePath
+    ) {
+    }
+
+    record ReportFromCacheOptions(
+        String cachePath,
+        String reportPath,
         String serviceParser
+    ) {
+    }
+
+    record CachedComparisonReport(
+        String sessionId,
+        long seq,
+        ComparisonReport report
     ) {
     }
 
@@ -439,10 +545,12 @@ public class FlowReplayCLI {
         private final String replayTarget;
         private final String reportPath;
         private final String serviceParser;
+        private final String liveReportCachePath;
         private final TrafficReplayer replayer;
         private final ExecutorService executor;
         private final Comparator comparator;
         private final HtmlReportGenerator reportGenerator;
+        private final LiveReportCacheStore cacheStore;
         private final Map<Long, ComparisonReport> comparisonReports;
         private final AtomicLong total = new AtomicLong();
         private final AtomicLong succeeded = new AtomicLong();
@@ -450,19 +558,24 @@ public class FlowReplayCLI {
         private final AtomicLong matched = new AtomicLong();
         private final AtomicLong sequence = new AtomicLong();
         private final AtomicBoolean closed = new AtomicBoolean(false);
+        private final String cacheSessionId;
 
         private LiveReplaySupport(
             String replayTarget,
             boolean enableCompare,
             String reportPath,
             String configPath,
-            String serviceParser
+            String serviceParser,
+            String liveReportCachePath
         ) {
             this.replayTarget = replayTarget;
             this.enabled = replayTarget != null && !replayTarget.isBlank();
             this.compareEnabled = enabled && enableCompare;
             this.reportPath = reportPath;
             this.serviceParser = serviceParser;
+            this.liveReportCachePath = liveReportCachePath;
+            this.cacheSessionId = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS")
+                .format(Instant.now().atZone(ZoneId.systemDefault()));
             if (enabled) {
                 this.replayer = new TrafficReplayer(replayTarget, true);
                 this.executor = Executors.newVirtualThreadPerTaskExecutor();
@@ -473,10 +586,12 @@ public class FlowReplayCLI {
                     this.comparator = new Comparator(configs);
                     this.reportGenerator = new HtmlReportGenerator();
                     this.comparisonReports = new ConcurrentHashMap<>();
+                    this.cacheStore = LiveReportCacheStore.openForAppend(liveReportCachePath);
                 } else {
                     this.comparator = null;
                     this.reportGenerator = null;
                     this.comparisonReports = null;
+                    this.cacheStore = null;
                 }
             } else {
                 this.replayer = null;
@@ -484,6 +599,7 @@ public class FlowReplayCLI {
                 this.comparator = null;
                 this.reportGenerator = null;
                 this.comparisonReports = null;
+                this.cacheStore = null;
             }
         }
 
@@ -514,6 +630,7 @@ public class FlowReplayCLI {
                     if (compareEnabled) {
                         ComparisonReport report = buildComparisonReport(record, replayResult);
                         comparisonReports.put(seq, report);
+                        cacheReport(seq, report);
                         if (report.result().matched()) {
                             matched.incrementAndGet();
                         }
@@ -527,6 +644,7 @@ public class FlowReplayCLI {
                         ReplayResult failedReplayResult = ReplayResult.failure(record.id(), 0, errorMessage);
                         ComparisonReport report = buildComparisonReport(record, failedReplayResult);
                         comparisonReports.put(seq, report);
+                        cacheReport(seq, report);
                     }
                 }
             });
@@ -544,6 +662,14 @@ public class FlowReplayCLI {
                 Map.of()
             );
             return new ComparisonReport(record, null, failedResult, replayResult.duration(), replayTimestamp);
+        }
+
+        private void cacheReport(long seq, ComparisonReport report) {
+            try {
+                cacheStore.append(cacheSessionId, seq, report);
+            } catch (Exception e) {
+                System.err.println("Failed to persist live report cache, seq=" + seq + ", error=" + e.getMessage());
+            }
         }
 
         @Override
@@ -568,11 +694,18 @@ public class FlowReplayCLI {
             );
 
             if (compareEnabled) {
+                try {
+                    cacheStore.close();
+                } catch (Exception e) {
+                    System.err.println("Failed to close live report cache: " + e.getMessage());
+                }
+
                 long compared = comparisonReports.size();
                 System.out.println(
                     "Live comparison summary: "
                         + matched.get() + "/" + compared + " matched"
                 );
+                System.out.println("Live comparison cache saved: " + liveReportCachePath);
 
                 if (reportPath != null) {
                     try {
@@ -586,6 +719,96 @@ public class FlowReplayCLI {
                     } catch (Exception e) {
                         System.err.println("Failed to generate live report: " + e.getMessage());
                     }
+                }
+            }
+        }
+    }
+
+    private static final class LiveReportCacheStore implements AutoCloseable {
+        private final Path cachePath;
+        private final ObjectMapper objectMapper;
+        private final BufferedWriter writer;
+        private final Object writeLock = new Object();
+
+        private LiveReportCacheStore(Path cachePath, ObjectMapper objectMapper, BufferedWriter writer) {
+            this.cachePath = cachePath;
+            this.objectMapper = objectMapper;
+            this.writer = writer;
+        }
+
+        static LiveReportCacheStore openForAppend(String cachePath) {
+            try {
+                Path path = Paths.get(cachePath);
+                Path parent = path.getParent();
+                if (parent != null) {
+                    Files.createDirectories(parent);
+                }
+                ObjectMapper objectMapper = new ObjectMapper();
+                objectMapper.registerModule(new JavaTimeModule());
+                BufferedWriter writer = Files.newBufferedWriter(
+                    path,
+                    StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.APPEND
+                );
+                return new LiveReportCacheStore(path, objectMapper, writer);
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to open live report cache: " + cachePath, e);
+            }
+        }
+
+        static List<ComparisonReport> readReports(String cachePath) {
+            Path path = Paths.get(cachePath);
+            if (!Files.exists(path)) {
+                return List.of();
+            }
+            ObjectMapper objectMapper = new ObjectMapper();
+            objectMapper.registerModule(new JavaTimeModule());
+            List<CachedComparisonReport> cached = new ArrayList<>();
+            try (BufferedReader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.isBlank()) {
+                        continue;
+                    }
+                    cached.add(objectMapper.readValue(line, CachedComparisonReport.class));
+                }
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to read cache file: " + cachePath, e);
+            }
+            return cached.stream()
+                .sorted((a, b) -> {
+                    String sessionA = a.sessionId() == null ? "" : a.sessionId();
+                    String sessionB = b.sessionId() == null ? "" : b.sessionId();
+                    int sessionCmp = sessionA.compareTo(sessionB);
+                    if (sessionCmp != 0) {
+                        return sessionCmp;
+                    }
+                    return Long.compare(a.seq(), b.seq());
+                })
+                .map(CachedComparisonReport::report)
+                .toList();
+        }
+
+        void append(String sessionId, long seq, ComparisonReport report) {
+            synchronized (writeLock) {
+                try {
+                    writer.write(objectMapper.writeValueAsString(new CachedComparisonReport(sessionId, seq, report)));
+                    writer.newLine();
+                    writer.flush();
+                } catch (IOException e) {
+                    throw new RuntimeException("Failed to append live report cache: " + cachePath, e);
+                }
+            }
+        }
+
+        @Override
+        public void close() {
+            synchronized (writeLock) {
+                try {
+                    writer.close();
+                } catch (IOException e) {
+                    throw new RuntimeException("Failed to close live report cache: " + cachePath, e);
                 }
             }
         }
