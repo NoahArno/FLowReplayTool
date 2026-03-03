@@ -19,14 +19,17 @@ import com.flowreplay.proxy.HttpProxyServer;
 import com.flowreplay.proxy.TcpProxyServer;
 
 import java.net.URI;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
@@ -54,84 +57,75 @@ public class FlowReplayCLI {
     }
 
     private static void handleRecord(String[] args, boolean requireReplayTarget) {
-        int port = 8080;
-        String target = "localhost:8081";
-        String output = "./recordings";
-        String protocol = "http";
-        String protocolParser = "raw";
-        String replayTarget = null;
-
+        RecordCommandOptions options;
         try {
-            for (int i = 1; i < args.length; i++) {
-                switch (args[i]) {
-                    case "--port" -> port = Integer.parseInt(requireOptionValue(args, ++i, "--port"));
-                    case "--target" -> target = requireOptionValue(args, ++i, "--target");
-                    case "--output" -> output = requireOptionValue(args, ++i, "--output");
-                    case "--protocol" -> protocol = requireOptionValue(args, ++i, "--protocol").toLowerCase();
-                    case "--protocol-parser" -> protocolParser = requireOptionValue(args, ++i, "--protocol-parser");
-                    case "--replay-target", "--replay" -> {
-                        String option = args[i];
-                        replayTarget = requireOptionValue(args, ++i, option);
-                    }
-                    default -> {
-                        if (args[i].startsWith("--")) {
-                            throw new IllegalArgumentException("Unknown option for record: " + args[i]);
-                        }
-                    }
-                }
-            }
+            options = parseRecordOptions(args, requireReplayTarget);
         } catch (IllegalArgumentException e) {
             System.err.println("Invalid record arguments: " + e.getMessage());
             printUsage();
             return;
         }
 
-        if (!"http".equals(protocol) && !"tcp".equals(protocol)) {
-            System.err.println("Invalid protocol: " + protocol + " (supported: http|tcp)");
-            return;
-        }
-
-        if (requireReplayTarget && (replayTarget == null || replayTarget.isBlank())) {
-            System.err.println("record-replay/rr requires --replay-target <url|host:port>");
-            return;
-        }
-
-        HostPort hostPort = parseHostPort(target, 80);
-        if (isSelfProxyLoop(port, hostPort)) {
+        HostPort hostPort = parseHostPort(options.target(), 80);
+        if (isSelfProxyLoop(options.port(), hostPort)) {
             System.err.println("Invalid proxy config: --port and --target point to the same endpoint: " + hostPort.host() + ":" + hostPort.port());
             System.err.println("Please set --target to the real upstream service, e.g. --target localhost:8081");
             return;
         }
-        LiveReplaySupport liveReplaySupport = new LiveReplaySupport(replayTarget);
+        LiveReplaySupport liveReplaySupport = new LiveReplaySupport(
+            options.replayTarget(),
+            options.enableCompare(),
+            options.reportPath(),
+            options.configPath(),
+            options.serviceParser()
+        );
 
-        System.out.println("Starting " + protocol.toUpperCase() + " proxy on port " + port);
+        System.out.println("Starting " + options.protocol().toUpperCase() + " proxy on port " + options.port());
         System.out.println("Target: " + hostPort.host() + ":" + hostPort.port());
-        System.out.println("Output: " + output);
+        System.out.println("Output: " + options.output());
         if (liveReplaySupport.enabled()) {
-            System.out.println("Live replay enabled: " + replayTarget);
+            System.out.println("Live replay enabled: " + options.replayTarget());
+            if (liveReplaySupport.compareEnabled()) {
+                System.out.println("Live comparison enabled");
+                if (options.reportPath() != null) {
+                    System.out.println("Live report output: " + options.reportPath());
+                }
+                if (options.serviceParser() != null) {
+                    System.out.println("Live report parser: " + options.serviceParser());
+                }
+            }
         } else {
             System.out.println("Live replay disabled");
         }
 
         TrafficRecorder recorder = null;
+        AtomicReference<TrafficRecorder> recorderRef = new AtomicReference<>();
+        AtomicBoolean cleanedUp = new AtomicBoolean(false);
+        Thread shutdownHook = new Thread(() -> {
+            System.out.println("\nShutdown signal received, finalizing live replay and report...");
+            closeRecordResources(recorderRef.get(), liveReplaySupport, cleanedUp);
+        }, "flowreplay-record-shutdown");
+
+        Runtime.getRuntime().addShutdownHook(shutdownHook);
         try {
-            TrafficStorage storage = new FileStorage(output);
+            TrafficStorage storage = new FileStorage(options.output());
             recorder = new SimpleTrafficRecorder(storage);
+            recorderRef.set(recorder);
             Consumer<TrafficRecord> replayConsumer = liveReplaySupport.enabled() ? liveReplaySupport::submit : null;
 
-            if ("tcp".equals(protocol)) {
+            if ("tcp".equals(options.protocol())) {
                 TcpProxyServer server = new TcpProxyServer(
-                    port,
+                    options.port(),
                     hostPort.host(),
                     hostPort.port(),
                     recorder,
-                    protocolParser,
+                    options.protocolParser(),
                     replayConsumer
                 );
                 server.start();
             } else {
                 HttpProxyServer server = new HttpProxyServer(
-                    port,
+                    options.port(),
                     hostPort.host(),
                     hostPort.port(),
                     recorder,
@@ -143,10 +137,12 @@ public class FlowReplayCLI {
             System.err.println("Failed to start proxy: " + e.getMessage());
             e.printStackTrace();
         } finally {
-            if (recorder != null) {
-                recorder.close();
+            closeRecordResources(recorderRef.get(), liveReplaySupport, cleanedUp);
+            try {
+                Runtime.getRuntime().removeShutdownHook(shutdownHook);
+            } catch (IllegalStateException ignored) {
+                // JVM is already shutting down, hook is running or has run.
             }
-            liveReplaySupport.close();
         }
     }
 
@@ -265,6 +261,76 @@ public class FlowReplayCLI {
         System.out.println("Use replay --compare to compare recorded vs replayed responses.");
     }
 
+    static RecordCommandOptions parseRecordOptions(String[] args, boolean requireReplayTarget) {
+        int port = 8080;
+        String target = "localhost:8081";
+        String output = "./recordings";
+        String protocol = "http";
+        String protocolParser = "raw";
+        String replayTarget = null;
+        boolean enableCompare = false;
+        String reportPath = null;
+        String configPath = null;
+        String serviceParser = null;
+
+        for (int i = 1; i < args.length; i++) {
+            switch (args[i]) {
+                case "--port" -> port = Integer.parseInt(requireOptionValue(args, ++i, "--port"));
+                case "--target" -> target = requireOptionValue(args, ++i, "--target");
+                case "--output" -> output = requireOptionValue(args, ++i, "--output");
+                case "--protocol" -> protocol = requireOptionValue(args, ++i, "--protocol").toLowerCase();
+                case "--protocol-parser" -> protocolParser = requireOptionValue(args, ++i, "--protocol-parser");
+                case "--replay-target", "--replay" -> {
+                    String option = args[i];
+                    replayTarget = requireOptionValue(args, ++i, option);
+                }
+                case "--compare" -> enableCompare = true;
+                case "--report" -> reportPath = requireOptionValue(args, ++i, "--report");
+                case "--config" -> configPath = requireOptionValue(args, ++i, "--config");
+                case "--service-parser" -> serviceParser = requireOptionValue(args, ++i, "--service-parser");
+                default -> {
+                    if (args[i].startsWith("--")) {
+                        throw new IllegalArgumentException("Unknown option for record: " + args[i]);
+                    }
+                }
+            }
+        }
+
+        if (!"http".equals(protocol) && !"tcp".equals(protocol)) {
+            throw new IllegalArgumentException("Invalid protocol: " + protocol + " (supported: http|tcp)");
+        }
+
+        if (reportPath != null && !enableCompare) {
+            enableCompare = true;
+        }
+
+        if ((configPath != null || serviceParser != null) && !enableCompare) {
+            throw new IllegalArgumentException("--config/--service-parser requires --compare or --report");
+        }
+
+        boolean replayRelatedCompareOption = enableCompare || reportPath != null || configPath != null || serviceParser != null;
+        if (replayRelatedCompareOption && (replayTarget == null || replayTarget.isBlank())) {
+            throw new IllegalArgumentException("Live compare/report options require --replay-target <url|host:port>");
+        }
+
+        if (requireReplayTarget && (replayTarget == null || replayTarget.isBlank())) {
+            throw new IllegalArgumentException("record-replay/rr requires --replay-target <url|host:port>");
+        }
+
+        return new RecordCommandOptions(
+            port,
+            target,
+            output,
+            protocol,
+            protocolParser,
+            replayTarget,
+            enableCompare,
+            reportPath,
+            configPath,
+            serviceParser
+        );
+    }
+
     private static HostPort parseHostPort(String target, int defaultPort) {
         if (target == null || target.isBlank()) {
             throw new IllegalArgumentException("target must not be empty");
@@ -295,24 +361,46 @@ public class FlowReplayCLI {
         return args[index];
     }
 
+    private static void closeRecordResources(TrafficRecorder recorder, LiveReplaySupport liveReplaySupport, AtomicBoolean cleanedUp) {
+        if (!cleanedUp.compareAndSet(false, true)) {
+            return;
+        }
+        if (recorder != null) {
+            try {
+                recorder.close();
+            } catch (Exception e) {
+                System.err.println("Failed to close recorder: " + e.getMessage());
+            }
+        }
+        try {
+            liveReplaySupport.close();
+        } catch (Exception e) {
+            System.err.println("Failed to close live replay support: " + e.getMessage());
+        }
+    }
+
     private static void printUsage() {
         System.out.println("FlowReplay - Traffic Recording and Replay Tool");
         System.out.println();
         System.out.println("Usage:");
-        System.out.println("  flowreplay record [--port <port>] [--target <host:port>] [--output <path>] [--protocol http|tcp] [--protocol-parser <parser>] [--replay-target <url|host:port>]");
-        System.out.println("  flowreplay record-replay|rr [--port <port>] [--target <host:port>] [--output <path>] --replay-target <url|host:port> [--protocol http|tcp] [--protocol-parser <parser>]");
+        System.out.println("  flowreplay record [--port <port>] [--target <host:port>] [--output <path>] [--protocol http|tcp] [--protocol-parser <parser>] [--replay-target <url|host:port>] [--compare] [--report <path>] [--config <path>] [--service-parser <parser>]");
+        System.out.println("  flowreplay record-replay|rr [--port <port>] [--target <host:port>] [--output <path>] --replay-target <url|host:port> [--protocol http|tcp] [--protocol-parser <parser>] [--compare] [--report <path>] [--config <path>] [--service-parser <parser>]");
         System.out.println("  flowreplay replay --input <path> --target <url|host:port> [--compare] [--report <path>] [--config <path>] [--service-parser <parser>] [--mode <mode>]");
         System.out.println("  flowreplay compare (not implemented, use replay --compare)");
         System.out.println();
         System.out.println("Key parameters:");
         System.out.println("  --replay-target <url|host:port>  Enable live replay while recording");
         System.out.println("  --replay <url|host:port>         Alias of --replay-target");
+        System.out.println("  --compare                        Compare recorded and replayed responses");
+        System.out.println("  --report <path>                  HTML report output path (auto-enables --compare)");
+        System.out.println("  --config <path>                  Comparison config YAML");
         System.out.println("  --mode <mode>                    Replay mode: sequential|concurrent (default: sequential)");
         System.out.println("  --service-parser <parser>        Report parser: uri|esb (default: uri)");
         System.out.println();
         System.out.println("Examples:");
         System.out.println("  flowreplay record --port 8080 --target localhost:8081 --output ./recordings");
         System.out.println("  flowreplay rr --port 8080 --target localhost:8081 --output ./recordings --replay-target http://localhost:9090");
+        System.out.println("  flowreplay rr --port 8080 --target localhost:8081 --output ./recordings --replay-target http://localhost:9090 --compare --report ./live-report.html");
         System.out.println("  flowreplay record --port 8080 --target localhost:8081 --output ./recordings --replay http://localhost:9090");
         System.out.println("  flowreplay replay --input ./recordings --target http://localhost:9090 --mode concurrent");
         System.out.println("  flowreplay replay --input ./recordings --target http://localhost:9090 --compare --report ./report.html");
@@ -331,25 +419,71 @@ public class FlowReplayCLI {
     private record HostPort(String host, int port) {
     }
 
+    record RecordCommandOptions(
+        int port,
+        String target,
+        String output,
+        String protocol,
+        String protocolParser,
+        String replayTarget,
+        boolean enableCompare,
+        String reportPath,
+        String configPath,
+        String serviceParser
+    ) {
+    }
+
     private static final class LiveReplaySupport implements AutoCloseable {
         private final boolean enabled;
+        private final boolean compareEnabled;
         private final String replayTarget;
+        private final String reportPath;
+        private final String serviceParser;
         private final TrafficReplayer replayer;
         private final ExecutorService executor;
+        private final Comparator comparator;
+        private final HtmlReportGenerator reportGenerator;
+        private final Map<Long, ComparisonReport> comparisonReports;
         private final AtomicLong total = new AtomicLong();
         private final AtomicLong succeeded = new AtomicLong();
         private final AtomicLong failed = new AtomicLong();
+        private final AtomicLong matched = new AtomicLong();
+        private final AtomicLong sequence = new AtomicLong();
         private final AtomicBoolean closed = new AtomicBoolean(false);
 
-        private LiveReplaySupport(String replayTarget) {
+        private LiveReplaySupport(
+            String replayTarget,
+            boolean enableCompare,
+            String reportPath,
+            String configPath,
+            String serviceParser
+        ) {
             this.replayTarget = replayTarget;
             this.enabled = replayTarget != null && !replayTarget.isBlank();
+            this.compareEnabled = enabled && enableCompare;
+            this.reportPath = reportPath;
+            this.serviceParser = serviceParser;
             if (enabled) {
                 this.replayer = new TrafficReplayer(replayTarget, true);
                 this.executor = Executors.newVirtualThreadPerTaskExecutor();
+                if (compareEnabled) {
+                    List<ComparisonConfig> configs = configPath != null
+                        ? ComparisonConfigLoader.load(configPath)
+                        : ComparisonConfigLoader.loadDefault();
+                    this.comparator = new Comparator(configs);
+                    this.reportGenerator = new HtmlReportGenerator();
+                    this.comparisonReports = new ConcurrentHashMap<>();
+                } else {
+                    this.comparator = null;
+                    this.reportGenerator = null;
+                    this.comparisonReports = null;
+                }
             } else {
                 this.replayer = null;
                 this.executor = null;
+                this.comparator = null;
+                this.reportGenerator = null;
+                this.comparisonReports = null;
             }
         }
 
@@ -357,11 +491,16 @@ public class FlowReplayCLI {
             return enabled;
         }
 
+        private boolean compareEnabled() {
+            return compareEnabled;
+        }
+
         private void submit(TrafficRecord record) {
             if (!enabled || closed.get()) {
                 return;
             }
 
+            long seq = sequence.incrementAndGet();
             executor.submit(() -> {
                 try {
                     ReplayResult replayResult = replayer.replay(List.of(record)).get(0);
@@ -372,12 +511,39 @@ public class FlowReplayCLI {
                         failed.incrementAndGet();
                         System.err.println("Live replay failed, recordId=" + record.id() + ", error=" + replayResult.errorMessage());
                     }
+                    if (compareEnabled) {
+                        ComparisonReport report = buildComparisonReport(record, replayResult);
+                        comparisonReports.put(seq, report);
+                        if (report.result().matched()) {
+                            matched.incrementAndGet();
+                        }
+                    }
                 } catch (Exception e) {
                     total.incrementAndGet();
                     failed.incrementAndGet();
-                    System.err.println("Live replay exception, recordId=" + record.id() + ", error=" + e.getMessage());
+                    String errorMessage = e.getMessage() != null ? e.getMessage() : e.toString();
+                    System.err.println("Live replay exception, recordId=" + record.id() + ", error=" + errorMessage);
+                    if (compareEnabled) {
+                        ReplayResult failedReplayResult = ReplayResult.failure(record.id(), 0, errorMessage);
+                        ComparisonReport report = buildComparisonReport(record, failedReplayResult);
+                        comparisonReports.put(seq, report);
+                    }
                 }
             });
+        }
+
+        private ComparisonReport buildComparisonReport(TrafficRecord record, ReplayResult replayResult) {
+            Instant replayTimestamp = Instant.now();
+            if (replayResult.success()) {
+                ComparisonResult comparisonResult = comparator.compare(record, replayResult.response());
+                return new ComparisonReport(record, replayResult.response(), comparisonResult, replayResult.duration(), replayTimestamp);
+            }
+            ComparisonResult failedResult = new ComparisonResult(
+                false,
+                List.of(new Difference("replay", "error", "success", "failed: " + replayResult.errorMessage())),
+                Map.of()
+            );
+            return new ComparisonReport(record, null, failedResult, replayResult.duration(), replayTimestamp);
         }
 
         @Override
@@ -400,6 +566,28 @@ public class FlowReplayCLI {
                 "Live replay summary to " + replayTarget + ": "
                     + succeeded.get() + "/" + total.get() + " succeeded, failed=" + failed.get()
             );
+
+            if (compareEnabled) {
+                long compared = comparisonReports.size();
+                System.out.println(
+                    "Live comparison summary: "
+                        + matched.get() + "/" + compared + " matched"
+                );
+
+                if (reportPath != null) {
+                    try {
+                        List<ComparisonReport> orderedReports = comparisonReports.entrySet()
+                            .stream()
+                            .sorted(Map.Entry.comparingByKey())
+                            .map(Map.Entry::getValue)
+                            .toList();
+                        reportGenerator.generateReport(orderedReports, reportPath, serviceParser);
+                        System.out.println("Live report generated: " + reportPath);
+                    } catch (Exception e) {
+                        System.err.println("Failed to generate live report: " + e.getMessage());
+                    }
+                }
+            }
         }
     }
 }

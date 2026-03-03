@@ -68,6 +68,9 @@ JAR_PATH=flowreplay-cli/target/flowreplay-cli-1.0.0-SNAPSHOT-jar-with-dependenci
 # 简写命令 rr（等价于 record-replay）
 <JAVA_BIN> -jar <JAR_PATH> rr --port 8080 --target localhost:8081 --output ./recordings --replay-target http://localhost:9090
 
+# 边录制边回放，同时比对并在结束时生成报告
+<JAVA_BIN> -jar <JAR_PATH> rr --port 8080 --target localhost:8081 --output ./recordings --replay-target http://localhost:9090 --compare --report ./live-report.html
+
 # 也可以用 record + --replay-target/--replay
 <JAVA_BIN> -jar <JAR_PATH> record --port 8080 --target localhost:8081 --output ./recordings --replay http://localhost:9090
 ```
@@ -113,6 +116,10 @@ JAR_PATH=flowreplay-cli/target/flowreplay-cli-1.0.0-SNAPSHOT-jar-with-dependenci
 - `--protocol-parser <parser>` - TCP 协议解析器，默认 `raw`
 - `--replay-target <url|host:port>` - 启用“边录制边回放”
 - `--replay <url|host:port>` - `--replay-target` 的别名
+- `--compare` - 启用实时回放结果比对（仅在配置了 `--replay-target` 时有效）
+- `--report <path>` - 输出实时回放 HTML 报告（命令结束时生成，自动启用 `--compare`）
+- `--config <path>` - 比对规则配置文件（YAML）
+- `--service-parser <uri|esb>` - 报告服务名解析器
 
 ### 2. record-replay / rr 命令 - 一步式边录制边回放
 
@@ -125,6 +132,7 @@ JAR_PATH=flowreplay-cli/target/flowreplay-cli-1.0.0-SNAPSHOT-jar-with-dependenci
 - `rr` 是 `record-replay` 的简写
 - 必须提供 `--replay-target`（或 `--replay`）
 - 适用于“尽量少操作”的主流程
+- 支持 `--compare --report`，可在边录制边回放结束后直接得到报告
 
 ### 3. replay 命令 - 离线回放
 
